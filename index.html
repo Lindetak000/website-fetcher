@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Safe Mode HTML Fetcher with Render Proxy</title>
+</head>
+<body>
+  <h1>Safe HTML Preview (via Render Proxy)</h1>
+  <input type="text" id="urlInput" placeholder="Enter URL like https://example.com" style="width: 80%;" />
+  <button onclick="fetchRenderedHTML()">Fetch and Show</button>
+  <p id="status" style="color: gray;"></p>
+
+  <h2>Raw HTML:</h2>
+  <pre id="rawOutput" style="white-space: pre-wrap; background: #f0f0f0; padding: 1em; max-height: 300px; overflow: auto; cursor: pointer;"></pre>
+
+  <h2>Sanitized Preview (tap links to load new URL):</h2>
+  <iframe
+    id="renderFrame"
+    sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+    style="width: 100%; height: 700px; border: 1px solid #ccc; box-sizing: border-box;"
+  ></iframe>
+
+  <script>
+    const RENDER_PROXY = "https://your-render-url/render?url="; // <=== Change this!
+
+    // Sanitize and rebase links inside fetched HTML
+    function rebaseAndSanitize(html, baseUrl) {
+      const base = new URL(baseUrl);
+
+      // Remove <script>, <iframe>, <meta http-equiv="refresh">
+      html = html.replace(/<script[\s\S]*?<\/script>/gi, "");
+      html = html.replace(/<iframe[\s\S]*?<\/iframe>/gi, "");
+      html = html.replace(/<meta[^>]+http-equiv=["']?refresh["']?[^>]*>/gi, "");
+
+      // Rebase relative href/src to absolute URLs
+      html = html.replace(/(href|src)=["'](\/[^"']*)["']/gi, (_, attr, path) => {
+        const newUrl = new URL(path, base).href;
+        return `${attr}="${newUrl}"`;
+      });
+
+      // Make all <a> links call parent to fetch new URL through proxy
+      const interceptScript = `
+        document.querySelectorAll('a').forEach(a => {
+          a.addEventListener('click', e => {
+            e.preventDefault();
+            parent.postMessage(a.href, '*');
+          });
+        });
+        window.open = function(url) {
+          parent.postMessage(url, '*');
+        };
+      `;
+      return html + `<script>${interceptScript}<\/script>`;
+    }
+
+    async function fetchRenderedHTML() {
+      const inputUrl = document.getElementById("urlInput").value.trim();
+      if (!inputUrl) {
+        alert("Please enter a URL");
+        return;
+      }
+
+      // Prepend your Render proxy URL
+      const fetchUrl = RENDER_PROXY + encodeURIComponent(inputUrl);
+      const status = document.getElementById("status");
+      status.textContent = "Fetching rendered page...";
+
+      try {
+        const response = await fetch(fetchUrl);
+        if (!response.ok) throw new Error("Render proxy error: " + response.status);
+
+        let html = await response.text();
+        const cleanHtml = rebaseAndSanitize(html, inputUrl);
+
+        document.getElementById("rawOutput").textContent = cleanHtml;
+        document.getElementById("renderFrame").srcdoc = cleanHtml;
+        status.textContent = "Preview loaded. Tap links inside preview to navigate.";
+      } catch (err) {
+        document.getElementById("rawOutput").textContent = "Error: " + err.message;
+        status.textContent = "Failed to load. Check the URL or proxy.";
+      }
+    }
+
+    // Listen for messages from iframe link clicks
+    window.addEventListener("message", (event) => {
+      if (typeof event.data === "string" && event.data.startsWith("http")) {
+        document.getElementById("urlInput").value = event.data;
+        document.getElementById("status").textContent = "URL updated from tapped link. Fetching new page...";
+        fetchRenderedHTML();
+      }
+    });
+  </script>
+</body>
+</html>
